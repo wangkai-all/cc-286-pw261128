@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>分桶迁移工作台</title>
+<style>
+  :root {
+    --ink: #1c2333; --muted: #5b6474; --line: #d9dee7; --bg: #f6f7f9;
+    --card: #ffffff; --accent: #2f6fdd; --ok: #1a7f4b; --warn: #b25e09;
+    --bad: #c03535; --chip: #eef2fb;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.55 -apple-system, "Segoe UI", "PingFang SC",
+         "Microsoft YaHei", sans-serif; color: var(--ink); background: var(--bg); }
+  header { background: var(--card); border-bottom: 1px solid var(--line);
+           padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+  main { max-width: 1280px; margin: 0 auto; padding: 18px 24px 60px; }
+  section { background: var(--card); border: 1px solid var(--line);
+            border-radius: 10px; padding: 16px 18px; margin-bottom: 18px; }
+  h2 { margin: 0 0 4px; font-size: 15.5px; }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+  label { font-size: 12.5px; color: var(--muted); display: block; margin-bottom: 2px; }
+  input, select, button { font: inherit; }
+  input, select { padding: 5px 8px; border: 1px solid var(--line);
+                  border-radius: 6px; background: #fff; color: var(--ink); }
+  button { padding: 5px 14px; border: 1px solid var(--accent); background: var(--accent);
+           color: #fff; border-radius: 6px; cursor: pointer; }
+  button.ghost { background: #fff; color: var(--accent); }
+  button.small { padding: 2px 8px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;
+         margin-bottom: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line);
+           white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; background: #fafbfc; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px;
+           font-size: 11.5px; font-weight: 600; }
+  .b-ok { background: #e2f4ea; color: var(--ok); }
+  .b-warn { background: #fbeed7; color: var(--warn); }
+  .b-bad { background: #fbe3e3; color: var(--bad); }
+  .b-info { background: var(--chip); color: var(--accent); }
+  .b-muted { background: #eceff3; color: var(--muted); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 960px) { .cols { grid-template-columns: 1fr; } }
+  .panel { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .panel h3 { margin: 0 0 8px; font-size: 13.5px; }
+  .scroll { max-height: 340px; overflow: auto; }
+  code { background: #f0f2f6; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .gap-list { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; }
+  .bar-wrap { background: #eef1f6; border-radius: 4px; height: 8px; min-width: 60px; }
+  .bar { background: var(--accent); height: 8px; border-radius: 4px; }
+  .note { font-size: 12.5px; color: var(--muted); }
+  .err { color: var(--bad); font-size: 12.5px; }
+  ul.tight { margin: 6px 0; padding-left: 20px; }
+  ul.tight li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>分桶迁移工作台 <span class="badge b-info">本地整点 → 营业日 + 不等长班次</span></h1>
+  <p>时间区间、桶标签、归属规则三者分离；所有边界由「本地墙钟 + IANA 时区」正向转换，不加减固定小时。
+     旧口径(v1)聚合永不被改写，历史查询链接持续有效。</p>
+</header>
+<main>
+
+<section>
+  <h2><span class="num">1</span> 系统状态</h2>
+  <p class="hint">站点、规则版本（不可变；改版 = 新版本）与入仓双写状态。</p>
+  <div class="row" style="align-items:flex-start">
+    <div style="flex:1;min-width:280px">
+      <h3 class="note" style="margin:0 0 4px">站点</h3>
+      <table id="sites"></table>
+    </div>
+    <div style="flex:2;min-width:320px">
+      <h3 class="note" style="margin:0 0 4px">规则版本</h3>
+      <table id="rules"></table>
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label>新版本号（如 v3）</label><input id="newRuleId" value="v3" style="width:70px">
+    </div>
+    <div>
+      <label>班次（名称 起 止，分号分隔）</label>
+      <input id="newShifts" style="width:360px"
+             value="day 08:00 20:00; night 20:00 08:00">
+    </div>
+    <div>
+      <label>营业日界</label><input id="newDayStart" value="00:00" style="width:70px">
+    </div>
+    <div>
+      <label>跨午夜归属</label>
+      <select id="newAttr"><option value="start_day">归开工日</option>
+      <option value="end_day">归收工日</option></select>
+    </div>
+    <button id="btnCreateRule" class="ghost">创建规则版本</button>
+    <span id="ruleMsg"></span>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">2</span> 合成数据与对账</h2>
+  <p class="hint">确定性合成事件（固定种子）：含 spring-forward / fall-back / 班次边界 ±1 分钟 /
+    跨午夜等可核对边界案例；另模拟一段「只有旧汇总、没有原始事件」的 9 月历史（v2 不可恢复），
+    以及一个时间戳损坏的事件（使迁移段失败，用于演示恢复）。</p>
+  <div class="row">
+    <button id="btnGen">生成合成事件并入仓</button>
+    <button id="btnGenLegacy" class="ghost">生成 + 9月旧汇总 + 坏事件</button>
+    <button id="btnFixBad" class="ghost">修复坏事件(改为 2026-11-15T12:00Z)</button>
+    <button id="btnQuarBad" class="ghost">隔离坏事件</button>
+    <span id="genMsg"></span>
+  </div>
+  <div class="row" style="align-items:center">
+    <button id="btnVerify" class="ghost">对账（events 独立重算 vs 聚合表）</button>
+    <span id="verifyMsg"></span>
+  </div>
+  <div id="verifyOut"></div>
+</section>
+
+<section>
+  <h2><span class="num">3</span> 两口径对比</h2>
+  <p class="hint">同一时间区间，左旧（v1 本地整点）右新（v2 营业日+班次）。覆盖率逐段给出：
+    <span class="badge b-warn">pending</span> 有原始事件待重算；
+    <span class="badge b-bad">unrecoverable</span> 原始事件缺失，只有旧汇总，不编造精确值。</p>
+  <div class="row">
+    <div><label>站点</label><select id="cmpSite"></select></div>
+    <div><label>从 (UTC)</label><input id="cmpFrom" value="2026-11-15T00:00:00Z" style="width:180px"></div>
+    <div><label>到 (UTC)</label><input id="cmpTo" value="2026-11-16T12:00:00Z" style="width:180px"></div>
+    <div><label>旧口径</label><select id="cmpRuleA"></select></div>
+    <div><label>新口径</label><select id="cmpRuleB"></select></div>
+    <button id="btnCompare">对比</button>
+  </div>
+  <div class="cols" id="cmpOut"></div>
+</section>
+
+<section>
+  <h2><span class="num">4</span> 事件归属查看器</h2>
+  <p class="hint">同一 UTC 瞬间在各规则版本下分别落入哪个桶（标签 + UTC 边界 + 真实时长）。</p>
+  <div class="row">
+    <div><label>站点</label><select id="attrSite"></select></div>
+    <div><label>UTC 瞬间</label><input id="attrTs" value="2026-11-16T06:30:00Z" style="width:190px"></div>
+    <button id="btnAttr">查看归属</button>
+    <span class="note">试试：</span>
+    <button class="small ghost" onclick="setAttr('2026-11-01T05:30:00Z')">fall-back 第一个01:30</button>
+    <button class="small ghost" onclick="setAttr('2026-11-01T06:30:00Z')">fall-back 第二个01:30</button>
+    <button class="small ghost" onclick="setAttr('2026-03-08T07:00:30Z')">spring-forward 后</button>
+    <button class="small ghost" onclick="setAttr('2026-11-16T02:59:00Z')">班次边界-1分</button>
+    <button class="small ghost" onclick="setAttr('2026-11-16T03:00:00Z')">夜班开工</button>
+  </div>
+  <div id="attrOut"></div>
+</section>
+
+<section>
+  <h2><span class="num">5</span> 迁移控制台</h2>
+  <p class="hint">按段重算（段 = 调度/恢复单位，桶 = 重算原子单位）。失败段可修复数据后重试；
+    修复事件会自动使覆盖它的已完成段失效重算。后台 worker 持续执行，也可手动触发。</p>
+  <div class="row">
+    <div><label>目标规则版本</label><select id="migRule"></select></div>
+    <div><label>站点</label><select id="migSite"></select></div>
+    <div><label>从 (UTC)</label><input id="migFrom" value="2026-03-01T00:00:00Z" style="width:180px"></div>
+    <div><label>到 (UTC)</label><input id="migTo" value="2026-11-18T00:00:00Z" style="width:180px"></div>
+    <div><label>段长(分钟)</label><input id="migSeg" value="720" style="width:70px"></div>
+    <button id="btnMig">创建迁移任务</button>
+    <button id="btnRun" class="ghost">立即执行待办段</button>
+    <span id="migMsg"></span>
+  </div>
+  <h3 class="note" style="margin:6px 0 4px">任务</h3>
+  <table id="jobs"></table>
+  <h3 class="note" style="margin:10px 0 4px">段（最近 200 条；failed 可重试）</h3>
+  <div class="scroll"><table id="segments"></table></div>
+</section>
+
+<section>
+  <h2><span class="num">6</span> 旧链接兼容 & 不可恢复信息</h2>
+  <p class="hint">旧查询链接（<code>/api/legacy/hourly?site=&date=&hour=</code>）永远读 v1 聚合，
+    迁移前后结果一致。fall-back 当天同一本地小时会如实返回两个桶。</p>
+  <div class="row">
+    <div><label>站点</label><select id="legSite"></select></div>
+    <div><label>日期</label><input id="legDate" value="2026-11-01" style="width:120px"></div>
+    <div><label>小时</label><input id="legHour" value="1" style="width:50px"></div>
+    <button id="btnLegacy" class="ghost">以旧链接查询</button>
+  </div>
+  <div id="legOut"></div>
+  <h3 class="note" style="margin:14px 0 4px">旧小时汇总无法恢复的信息（重算只能回原始事件）</h3>
+  <ul class="tight">
+    <li>小时内的事件分布 —— 班次边界不在整点时（如 13:30），无法把一小时拆开归到两个班次；</li>
+    <li>跨午夜班次的营业日归属 —— 需要事件级时间戳判断归开工日还是收工日；</li>
+    <li>min / max / 首尾事件 / 去重设备数 —— 旧汇总只存 count 与 sum；</li>
+    <li>DST 重复小时内的精确位置 —— 两个 01:00 若旧系统只记一个标签，无法区分。</li>
+  </ul>
+  <p class="note">因此本工作台选择<b>保留旧桶 + 回原始事件重算</b>，而不是重新分配旧桶；
+    原始事件缺失的区间只标注 <span class="badge b-bad">unrecoverable</span>，绝不编造精确值。</p>
+</section>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const api = async (path, body) => {
+  const opt = body ? {method: "POST", headers: {"Content-Type": "application/json"},
+                      body: JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+};
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = v => v === null || v === undefined ? "—" :
+  (typeof v === "number" && !Number.isInteger(v) ? v.toFixed(2) : v);
+
+let SITES = [], RULES = [];
+
+async function refreshState() {
+  const st = await api("/api/state");
+  SITES = st.sites; RULES = st.rule_versions;
+  $("sites").innerHTML = "<tr><th>站点</th><th>名称</th><th>时区</th></tr>" +
+    SITES.map(s => `<tr><td class="mono">${s.site_id}</td><td>${esc(s.name)}</td>
+      <td class="mono">${s.tz}</td></tr>`).join("");
+  $("rules").innerHTML = "<tr><th>版本</th><th>类型</th><th>参数</th><th>双写起始(UTC)</th><th>状态</th></tr>" +
+    RULES.map(r => `<tr><td class="mono">${r.rule_version}</td><td>${r.kind}</td>
+      <td class="mono">${esc(r.params_json)}</td><td class="mono">${r.activated_utc}</td>
+      <td><span class="badge ${r.status==="active"?"b-ok":"b-muted"}">${r.status}</span></td></tr>`).join("");
+  const siteOpts = SITES.map(s => `<option>${s.site_id}</option>`).join("");
+  ["cmpSite","attrSite","migSite","legSite"].forEach(id => $(id).innerHTML = siteOpts);
+  const ruleOpts = RULES.map(r => `<option>${r.rule_version}</option>`).join("");
+  $("cmpRuleA").innerHTML = ruleOpts; $("cmpRuleB").innerHTML = ruleOpts;
+  $("migRule").innerHTML = ruleOpts;
+  if (RULES.length > 1) $("cmpRuleB").value = RULES[RULES.length-1].rule_version;
+  renderJobs(st.jobs);
+  renderSegments();
+}
+
+function covBadge(cov) {
+  if (cov.status === "complete") return '<span class="badge b-ok">complete</span>';
+  return '<span class="badge b-warn">partial</span>';
+}
+function gapList(cov) {
+  const items = [];
+  for (const g of (cov.pending || []))
+    items.push(`<li><span class="badge b-warn">pending</span>
+      <span class="mono">${g.start_utc} → ${g.end_utc}</span></li>`);
+  for (const g of (cov.unrecoverable || []))
+    items.push(`<li><span class="badge b-bad">unrecoverable</span>
+      <span class="mono">${g.start_utc} → ${g.end_utc}</span></li>`);
+  return items.length ? `<ul class='gap-list'>${items.join("")}</ul>` : "";
+}
+function bucketTable(buckets) {
+  if (!buckets.length) return '<p class="note">该区间在此口径下无聚合数据。</p>';
+  const maxSum = Math.max(...buckets.map(b =>
+    Object.values(b.metrics).reduce((a,m)=>a+m.sum,0)), 0.0001);
+  return "<table><tr><th>桶标签</th><th>UTC 起</th><th>UTC 止</th>" +
+    "<th class='num'>count</th><th class='num'>sum</th><th class='num'>min</th>" +
+    "<th class='num'>max</th><th></th></tr>" + buckets.map(b => {
+      const m = b.metrics.power_kw || Object.values(b.metrics)[0] || {};
+      const w = Math.round(100 * (m.sum||0) / maxSum);
+      return `<tr><td class="mono">${esc(b.bucket_label)}</td>
+        <td class="mono">${b.start_utc}</td><td class="mono">${b.end_utc}</td>
+        <td class="num">${fmt(m.count)}</td><td class="num">${fmt(m.sum)}</td>
+        <td class="num">${fmt(m.min)}</td><td class="num">${fmt(m.max)}</td>
+        <td><div class="bar-wrap"><div class="bar" style="width:${w}%"></div></div></td></tr>`;
+    }).join("") + "</table>";
+}
+
+async function compare() {
+  const site = $("cmpSite").value, f = $("cmpFrom").value, t = $("cmpTo").value;
+  const [ra, rb] = [$("cmpRuleA").value, $("cmpRuleB").value];
+  const [qa, qb] = await Promise.all([
+    api(`/api/query?site=${site}&rule=${ra}&from=${f}&to=${t}`),
+    api(`/api/query?site=${site}&rule=${rb}&from=${f}&to=${t}`)]);
+  const panel = (rule, q) => `<div class="panel"><h3>
+      <span class="mono">${rule}</span> ${covBadge(q.coverage)}
+      <span class="note">${q.buckets.length} 个桶</span></h3>
+      ${gapList(q.coverage)}
+      <div class="scroll">${bucketTable(q.buckets)}</div></div>`;
+  $("cmpOut").innerHTML = panel(ra, qa) + panel(rb, qb);
+}
+
+function setAttr(ts) { $("attrTs").value = ts; attribute(); }
+async function attribute() {
+  const r = await api(`/api/attribute?site=${$("attrSite").value}&ts=${$("attrTs").value}`);
+  $("attrOut").innerHTML = `<p class="note">站点时区 <code>${r.tz}</code>，
+    瞬间 <code>${r.ts_utc}</code>：</p><table>
+    <tr><th>规则版本</th><th>桶标签</th><th>UTC 起</th><th>UTC 止</th><th class="num">真实时长(h)</th></tr>` +
+    r.attributions.map(a => `<tr><td class="mono">${a.rule_version}</td>
+      <td class="mono">${esc(a.bucket_label)}</td><td class="mono">${a.start_utc}</td>
+      <td class="mono">${a.end_utc}</td><td class="num">${a.duration_hours}</td></tr>`).join("") +
+    "</table>";
+}
+
+function renderJobs(jobs) {
+  $("jobs").innerHTML = "<tr><th>job</th><th>规则</th><th>站点</th><th>区间(UTC)</th>" +
+    "<th>段统计</th><th>状态</th></tr>" + (jobs||[]).map(j =>
+    `<tr><td class="num">${j.job_id}</td><td class="mono">${j.rule_version}</td>
+     <td class="mono">${j.site_id}</td>
+     <td class="mono">${j.range_start_utc} → ${j.range_end_utc}</td>
+     <td class="mono">${esc(JSON.stringify(j.segments))}</td>
+     <td><span class="badge ${j.status==="done"?"b-ok":j.status==="failed"?"b-bad":"b-info"}">${j.status}</span></td></tr>`).join("");
+}
+async function renderSegments() {
+  const r = await api("/api/migrations");
+  const stMap = {pending:"b-info", running:"b-info", done:"b-ok", failed:"b-bad"};
+  $("segments").innerHTML = "<tr><th>段</th><th>job</th><th>规则</th><th>站点</th>" +
+    "<th>区间(UTC)</th><th>状态</th><th class='num'>尝试</th><th>错误</th><th></th></tr>" +
+    r.segments.map(s => `<tr><td class="num">${s.segment_id}</td>
+      <td class="num">${s.job_id ?? "—"}</td><td class="mono">${s.rule_version}</td>
+      <td class="mono">${s.site_id}</td>
+      <td class="mono">${s.range_start_utc} → ${s.range_end_utc}</td>
+      <td><span class="badge ${stMap[s.status]}">${s.status}</span>
+          ${s.source==="legacy-import"?'<span class="badge b-muted">legacy</span>':""}</td>
+      <td class="num">${s.attempts}</td>
+      <td class="err">${esc(s.last_error || "")}</td>
+      <td>${s.status==="failed" ?
+        `<button class="small" onclick="retrySeg(${s.segment_id})">重试</button>` : ""}</td>
+    </tr>`).join("");
+}
+async function retrySeg(id) {
+  await api(`/api/segments/${id}/retry`, {});
+  await api("/api/migrations/run", {});
+  refreshState();
+}
+
+$("btnCreateRule").onclick = async () => {
+  try {
+    const shifts = $("newShifts").value.split(";").map(s => s.trim()).filter(Boolean)
+      .map(s => { const [name, start, end] = s.split(/\s+/); return {name, start, end}; });
+    const r = await api("/api/rules", {
+      rule_version: $("newRuleId").value.trim(), kind: "business_shift",
+      shifts, day_start: $("newDayStart").value.trim(),
+      attribution: $("newAttr").value});
+    $("ruleMsg").innerHTML = `<span class="badge b-ok">已创建 ${r.created}，入仓即刻双写</span>`;
+    refreshState();
+  } catch (e) { $("ruleMsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+$("btnGen").onclick = () => gen(false);
+$("btnGenLegacy").onclick = () => gen(true);
+async function gen(withBad) {
+  try {
+    const r = await api("/api/synth/generate", {with_legacy: true, with_bad_event: withBad});
+    $("genMsg").innerHTML = `<span class="badge b-ok">入仓 ${r.ingest.inserted} 条</span>
+      ${r.legacy ? `<span class="badge b-info">9月旧汇总 ${r.legacy.legacy_hours} 小时</span>` : ""}
+      ${r.bad_event ? `<span class="badge b-bad">坏事件 ${r.bad_event}</span>` : ""}`;
+    refreshState();
+  } catch (e) { $("genMsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+$("btnFixBad").onclick = async () => {
+  try {
+    const r = await api("/api/events/fix",
+      {event_id: "evt-bad-0001", ts_utc: "2026-11-15T12:00:00Z"});
+    $("genMsg").innerHTML = `<span class="badge b-ok">已修复</span>
+      <span class="note">失效段: ${r.invalidated_segments.join(", ") || "无"}（到控制台重跑）</span>`;
+    refreshState();
+  } catch (e) { $("genMsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+$("btnQuarBad").onclick = async () => {
+  try {
+    const r = await api("/api/events/fix", {event_id: "evt-bad-0001"});
+    $("genMsg").innerHTML = `<span class="badge b-ok">已隔离</span>`;
+    refreshState();
+  } catch (e) { $("genMsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+$("btnVerify").onclick = async () => {
+  const parts = [];
+  for (const s of SITES) for (const r of RULES) {
+    const v = await api(`/api/synth/verify?site=${s.site_id}&rule=${r.rule_version}`);
+    parts.push(`<tr><td class="mono">${s.site_id}</td><td class="mono">${r.rule_version}</td>
+      <td>${v.consistent ? '<span class="badge b-ok">一致</span>' : '<span class="badge b-bad">不一致</span>'}</td>
+      <td class="num">${v.buckets_expected}</td><td class="num">${v.buckets_in_db}</td>
+      <td class="err">${v.diffs.map(d => esc(d.bucket + ": " + d.issue)).join("<br>")}</td></tr>`);
+  }
+  $("verifyOut").innerHTML = "<table><tr><th>站点</th><th>规则</th><th>结论</th>" +
+    "<th class='num'>应有桶</th><th class='num'>库中桶</th><th>差异</th></tr>" +
+    parts.join("") + "</table>";
+};
+$("btnCompare").onclick = () => compare().catch(e => alert(e.message));
+$("btnAttr").onclick = () => attribute().catch(e => alert(e.message));
+$("btnMig").onclick = async () => {
+  try {
+    const r = await api("/api/migrations", {
+      rule_version: $("migRule").value, site: $("migSite").value,
+      from: $("migFrom").value, to: $("migTo").value,
+      segment_minutes: Number($("migSeg").value)});
+    $("migMsg").innerHTML = `<span class="badge b-ok">任务 ${r.job_id} 已创建</span>`;
+    refreshState();
+  } catch (e) { $("migMsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+$("btnRun").onclick = async () => {
+  const r = await api("/api/migrations/run", {});
+  const failed = r.processed.filter(p => p.status === "failed").length;
+  $("migMsg").innerHTML = `<span class="badge b-info">处理 ${r.processed.length} 段</span>
+    ${failed ? `<span class="badge b-bad">${failed} 段失败</span>` : ""}`;
+  refreshState();
+};
+$("btnLegacy").onclick = async () => {
+  try {
+    const r = await api(`/api/legacy/hourly?site=${$("legSite").value}` +
+      `&date=${$("legDate").value}&hour=${$("legHour").value}`);
+    $("legOut").innerHTML = `<p class="note">旧链接
+      <code>/api/legacy/hourly?site=${r.site_id}&date=${r.date}&hour=${r.hour}</code>
+      （口径固定 v1）：</p>` + bucketTable(r.buckets);
+  } catch (e) { $("legOut").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+};
+
+refreshState().then(() => compare()).catch(console.error);
+setInterval(() => { renderSegments(); api("/api/state").then(st => renderJobs(st.jobs)); }, 3000);
+</script>
+</body>
+</html>
